@@ -1,0 +1,336 @@
+/*
+* File: team4_project1.go 
+* CS 3339.001: Team 4
+* Authors: Jacob Doney, Jordan Burgess, Trevor Winkler
+* Last Update: 10/17/2023
+*
+* Description: LegV8 disassembler to convert machine code back
+* into LEGv8 Assembly Language. This disassembler takes in a 32 bit binary
+* machine code file, processes it, and outputs a text file containing the
+* disassembled code.
+ */
+
+package main
+
+import (
+	"bufio"
+	"flag"
+	"fmt"
+	"log"
+	"os"
+	"strconv"
+	"strings"
+)
+
+// stringToUint32 converts a binary string to a 32-bit unsigned integer.
+func stringToUint32(binaryStr string) uint32 {
+	intValue, err := strconv.ParseUint(binaryStr, 2, 64)
+	if err != nil {
+		log.Fatalf("Failed parsing Uint %s", err)
+	}
+	return uint32(intValue)
+}
+
+// stringToInt32 converts a binary string to a 32-bit signed integer.
+func stringToInt32(binaryStr string) int32 {
+
+	// Appending string of 1s to front negative values to make 32 bits
+	if binaryStr[0] == '1' {
+		for len(binaryStr) < 32 {
+			binaryStr = "1" + binaryStr
+		}
+	}
+
+	intValue, err := strconv.ParseInt(binaryStr, 2, 64)
+	if err != nil {
+		log.Fatalf("Failed parsing Int %s", err)
+	}
+	return int32(intValue)
+}
+
+// isValidBinary checks if a string is a valid 32-bit binary string.
+func isValidBinary(binaryStr string) bool {
+	if len(binaryStr) != 32 {
+		return false
+	}
+	for i := 0; i < len(binaryStr); i++ {
+		if binaryStr[i] != '1' && binaryStr[i] != '0' {
+			return false
+		}
+	}
+	return true
+}
+
+// getOPCODE determines the opcode and instruction format for a given LEGv8 binary instruction.
+func getOPCODE(opcode uint32) (string, string) {
+	opStr := ""
+	format := ""
+	if opcode >= 160 && opcode <= 191 {
+		opStr = "B"
+		format = "B"
+	} else if opcode == 1104 {
+		opStr = "AND"
+		format = "R"
+	} else if opcode == 1112 {
+		opStr = "ADD"
+		format = "R"
+	} else if opcode >= 1160 && opcode <= 1161 {
+		opStr = "ADDI"
+		format = "I"
+	} else if opcode == 1360 {
+		opStr = "ORR"
+		format = "R"
+	} else if opcode >= 1440 && opcode <= 1447 {
+		opStr = "CBZ"
+		format = "CB"
+	} else if opcode >= 1448 && opcode <= 1455 {
+		opStr = "CBNZ"
+		format = "CB"
+	} else if opcode == 1624 {
+		opStr = "SUB"
+		format = "R"
+	} else if opcode >= 1672 && opcode <= 1673 {
+		opStr = "SUBI"
+		format = "I"
+	} else if opcode >= 1684 && opcode <= 1687 {
+		opStr = "MOVZ"
+		format = "IM"
+	} else if opcode >= 1940 && opcode <= 1943 {
+		opStr = "MOVK"
+		format = "IM"
+	} else if opcode == 1690 {
+		opStr = "LSR"
+		format = "R"
+	} else if opcode == 1691 {
+		opStr = "LSL"
+		format = "R"
+	} else if opcode == 1984 {
+		opStr = "STUR"
+		format = "D"
+	} else if opcode == 1986 {
+		opStr = "LDUR"
+		format = "D"
+	} else if opcode == 1692 {
+		opStr = "ASR"
+		format = "R"
+	} else if opcode == 0 {
+		opStr = "NOP"
+		format = "N/A"
+	} else if opcode == 1872 {
+		opStr = "EOR"
+		format = "R"
+	} else if opcode == 2038 {
+		opStr = "BREAK"
+		format = "BREAK"
+	} else {
+		opStr = "Unknown Instruction"
+		format = "Other"
+	}
+	return opStr, format
+}
+
+// disassembleR disassembles a register-based (R) LEGv8 instruction.
+func disassembleR(binaryStr string) (uint32, uint32, uint32, uint32) {
+	binary := stringToUint32(binaryStr)
+	rm := (binary >> 0x10) & 0x1F
+	shamt := (binary >> 0xA) & 0x3F
+	rn := (binary >> 0x5) & 0x1F
+	rd := binary & 0x1F
+	return rm, shamt, rn, rd
+}
+
+// disassembleD disassembles a data processing (D) LEGv8 instruction.
+func disassembleD(binaryStr string) (uint32, uint32, uint32) {
+	binary := stringToUint32(binaryStr)
+	address := (binary >> 0xC) & 0x1FF
+	rn := (binary >> 0x5) & 0x1F
+	rt := binary & 0x1F
+	return rt, rn, address
+}
+
+// disassembleCB disassembles a conditional branch (CB) LEGv8 instruction.
+func disassembleCB(binaryStr string) (int32, uint32) {
+	binary := stringToUint32(binaryStr)
+	conditional := binary & 0x1F
+	offset := stringToInt32(binaryStr[8:27])
+	return offset, conditional
+}
+
+// disassembleI disassembles an immediate (I) LEGv8 instruction.
+func disassembleI(binaryStr string) (uint32, uint32, uint32) {
+	binary := stringToUint32(binaryStr)
+	immediate := (binary >> 10) & 0xFFF
+	rn := (binary >> 0x5) & 0x1F
+	rd := binary & 0x1F
+	return rd, rn, immediate
+}
+
+// disassembleIM disassembles an immediate move (IM) LEGv8 instruction.
+func disassembleIM(binaryStr string) (uint32, uint32, uint32) {
+	binary := stringToUint32(binaryStr)
+	shift := 16 * ((binary >> 21) & 0x3)
+	field := (binary >> 5) & 0xFFFF
+	rd := binary & 0x1F
+	return rd, field, shift
+}
+
+// disassembleB disassembles a branch (B) LEGv8 instruction.
+func disassembleB(binaryStr string) int32 {
+	offset := stringToInt32(binaryStr[6:])
+	return offset
+}
+
+// getFileData reads the input file and stores the data.
+func getFileData(inputFile string) []string {
+	fileIn, err := os.Open(inputFile)
+	if err != nil {
+		log.Fatalf("Failed opening file %s", err)
+	}
+	scanner := bufio.NewScanner(fileIn)
+	scanner.Split(bufio.ScanLines)
+	var txtlines []string
+
+	for scanner.Scan() {
+		txtlines = append(txtlines, scanner.Text())
+	}
+
+	err = fileIn.Close()
+	if err != nil {
+		log.Fatalf("Failed closing file %s", err)
+	}
+	return txtlines
+}
+
+// createOutputFile creates the output file with the disassembled LEGv8 assembly code.
+func createOutputFile(outputFile string, txtlines []string) {
+
+	var toPrint = ""
+	isData := false
+	memory := 96
+
+	fileOut, err := os.Create(outputFile)
+	if err != nil {
+		log.Fatalf("Failed creating output file %s", err)
+	}
+
+	for _, eachline := range txtlines {
+		// Data cleaning to remove any spaces or newline chars
+		eachline = strings.TrimSuffix(eachline, "\n")
+		eachline = strings.Trim(eachline, " ")
+		eachline = strings.Replace(eachline, " ", "", -1)
+
+		if isValidBinary(eachline) {
+			if !isData {
+				toPrint, isData, memory = getOutput(eachline, memory)
+			} else {
+				value := stringToInt32(eachline)
+				toPrint = fmt.Sprintf("%32s\t%d\t%d\n", eachline, memory, value)
+				memory += 4
+			}
+		} else {
+			toPrint = fmt.Sprintf("%s\t%s\n", eachline, "Unknown Instruction")
+		}
+		if len(eachline) > 0 {
+			_, err := fileOut.WriteString(toPrint)
+			if err != nil {
+				log.Fatalf("Failed Writing to file %s", err)
+			}
+		}
+	}
+
+	err = fileOut.Close()
+	if err != nil {
+		log.Fatalf("Failed closing output file %s", err)
+	}
+}
+
+// getOutput formats the assembly code for printing.
+func getOutput(binaryStr string, memory int) (string, bool, int) {
+	opcode, format := getOPCODE(stringToUint32(binaryStr[:11]))
+	disassembly := ""
+	breakFlag := false
+	switch format {
+	case "BREAK":
+		disassembly = fmt.Sprintf("%1s %5s %5s %5s %5s %5s %6s\t%d\t%s\n",
+			binaryStr[:1], binaryStr[1:6], binaryStr[6:11], binaryStr[11:16], binaryStr[16:21],
+			binaryStr[21:26], binaryStr[26:], memory, opcode)
+		breakFlag = true
+	case "R":
+		rm, shamt, rn, rd := disassembleR(binaryStr)
+		if opcode == "LSR" || opcode == "LSL" || opcode == "ASR" {
+			disassembly = fmt.Sprintf("%11s %5s %6s %5s %5s\t%d\t%s\tR%d, R%d, #%d\n",
+				binaryStr[:11], binaryStr[11:16], binaryStr[16:22], binaryStr[22:27], binaryStr[27:],
+				memory, opcode, rd, rn, shamt)
+		} else {
+			disassembly = fmt.Sprintf("%11s %5s %6s %5s %5s\t%d\t%s\tR%d, R%d, R%d\n",
+				binaryStr[:11], binaryStr[11:16], binaryStr[16:22], binaryStr[22:27], binaryStr[27:],
+				memory, opcode, rd, rn, rm)
+		}
+	case "D":
+		rt, rn, address := disassembleD(binaryStr)
+		disassembly = fmt.Sprintf("%11s %9s %2s %5s %5s\t%d\t%s\tR%d, [R%d, #%d]\n",
+			binaryStr[:11], binaryStr[11:20], binaryStr[20:22], binaryStr[22:27], binaryStr[27:],
+			memory, opcode, rt, rn, address)
+	case "I":
+		rd, rn, immediate := disassembleI(binaryStr)
+		disassembly = fmt.Sprintf("%10s %12s %5s %5s\t%d\t%s\tR%d, R%d, #%d\n",
+			binaryStr[:10], binaryStr[10:22], binaryStr[22:27], binaryStr[27:],
+			memory, opcode, rd, rn, immediate)
+	case "CB":
+		offset, conditional := disassembleCB(binaryStr)
+		disassembly = fmt.Sprintf("%8s %19s %5s\t%d\t%s\tR%d, #%d\n",
+			binaryStr[:8], binaryStr[8:27], binaryStr[27:],
+			memory, opcode, conditional, offset)
+	case "B":
+		offset := disassembleB(binaryStr)
+		disassembly = fmt.Sprintf("%6s %26s\t%d\t%s\t#%d\n",
+			binaryStr[:6], binaryStr[6:], memory, opcode, offset)
+	case "IM":
+		rd, field, shift := disassembleIM(binaryStr)
+		disassembly = fmt.Sprintf("%9s %2s %16s %5s\t%d\t%s\tR%d, %d, LSL %d\n",
+			binaryStr[:9], binaryStr[9:11], binaryStr[11:27], binaryStr[27:],
+			memory, opcode, rd, field, shift)
+	case "N/A":
+		disassembly = fmt.Sprintf("%32s\t%d\t%s\n", binaryStr, memory, opcode)
+	default:
+		disassembly = fmt.Sprintf("%32s\t%s\n", binaryStr, opcode)
+	}
+	if opcode != "Unknown Instruction" {
+		memory += 4
+	}
+	return disassembly, breakFlag, memory
+}
+
+// main handles the flags and runs the disassembler
+func main() {
+	var InputFileName *string
+	var OutputFileName *string
+
+	var OutputFileExtension = "_dis.txt"
+
+	InputFileName = flag.String("i", "", "Gets the input file name")
+	OutputFileName = flag.String("o", "", "Gets the output file name")
+
+	flag.Parse()
+
+	// To fix the issue if compiled with go run . team4_project1.go -i <input file> -o <output file>
+	// The . is preventing the flag.Sting() functions from working
+	if flag.NArg() != 0 {
+		for i := 0; i < flag.NArg(); i++ {
+			if flag.Arg(i) == "-i" && i+1 <= flag.NArg() {
+				*InputFileName = flag.Arg(i + 1)
+			}
+			if flag.Arg(i) == "-o" && i+1 <= flag.NArg() {
+				*OutputFileName = flag.Arg(i + 1)
+			}
+		}
+	}
+
+	if *InputFileName == "" || *OutputFileName == "" {
+		fmt.Println("Input and output file names are required.")
+		flag.Usage()
+		os.Exit(1)
+	}
+	fileData := getFileData(*InputFileName)
+	createOutputFile(*OutputFileName+OutputFileExtension, fileData)
+}
